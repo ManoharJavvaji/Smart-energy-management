@@ -1,0 +1,321 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Energy | Institution Dashboard</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b1220;color:#e5edf8;font-family:Arial,sans-serif}
+header{padding:24px 5%;background:#111c30;border-bottom:1px solid #26344a}
+h1{margin:0;font-size:25px}
+header p{color:#9aabc3;margin:8px 0 0}
+main{max-width:1150px;margin:25px auto;padding:0 18px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px}
+.card,.room{background:#142137;border:1px solid #293b55;border-radius:12px;padding:17px}
+small{color:#9aabc3}
+.number{font-size:28px;font-weight:bold;margin-top:10px}
+.rooms{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:15px}
+.room h3{margin:0 0 12px}
+.status{font-weight:bold;margin-bottom:12px}
+.good{color:#4ade80}
+.bad{color:#fb7185}
+.warn{color:#fbbf24}
+button,select{background:#263d5c;color:white;border:1px solid #48617f;padding:9px 11px;border-radius:7px;margin:4px;cursor:pointer}
+button:hover{background:#36577f}
+.controls{margin:22px 0;padding:17px;background:#142137;border-radius:12px}
+.log{background:#101b2d;padding:10px;border-radius:7px;margin:7px 0;font-size:13px;color:#bdcce0}
+#logs{max-height:220px;overflow:auto}
+.appliance{margin:7px 0}
+footer{color:#8394ac;text-align:center;padding:25px}
+</style>
+</head>
+
+<body>
+<header>
+<h1>⚡ Smart Energy Management</h1>
+<p>Occupancy-based electricity control | Institutional monitoring prototype</p>
+</header>
+
+<main>
+<div class="stats">
+ <div class="card"><small>Total rooms</small><div class="number" id="total">5</div></div>
+ <div class="card"><small>Occupied rooms</small><div class="number" id="occupied">0</div></div>
+ <div class="card"><small>Empty rooms</small><div class="number" id="empty">0</div></div>
+ <div class="card"><small>Estimated energy saved</small><div class="number" id="saved">0.00 kWh</div></div>
+</div>
+
+<div class="controls">
+<h3>System configuration</h3>
+
+<label>Absence delay:
+<select id="delay">
+<option value="15">15 minutes</option>
+<option value="30">30 minutes</option>
+<option value="45" selected>45 minutes</option>
+<option value="60">60 minutes</option>
+</select>
+</label>
+
+<button onclick="runAll()">Run automatic control</button>
+<button onclick="resetAll()">Reset simulation</button>
+
+<p><small>Automatic shutdown begins only after the selected continuous absence period. Real installations require locally enforced safety controls.</small></p>
+</div>
+
+<h2>Room monitoring</h2>
+<div class="rooms" id="rooms"></div>
+
+<h2>System activity and safety log</h2>
+<div class="card" id="logs"></div>
+
+<footer>Smart Energy Prototype · Simulated data · No physical electrical circuits are controlled</footer>
+</main>
+
+<script>
+const rooms=Array.from({length:5},(_,i)=>({
+ id:101+i,
+ people:i===0||i===2?1:0,
+ sensor:true,
+ network:true,
+ manual:"AUTO",
+ lights:true,
+ fan:true,
+ emptySince:null,
+ lastTime:Date.now()
+}));
+
+const WATTS=150;
+let logs=[];
+let totalSaved=0;
+
+function log(msg){
+ logs.unshift(new Date().toLocaleTimeString()+" — "+msg);
+ logs=logs.slice(0,35);
+
+ document.getElementById("logs").innerHTML=
+ logs.map(x=>'<div class="log">'+x+'</div>').join("");
+}
+
+function control(r){
+ const now=Date.now();
+ const elapsed=Math.max(0,(now-r.lastTime)/3600000);
+
+ // Estimate savings only during verified automatic shutdown.
+ if(
+   r.people===0 &&
+   !r.lights &&
+   !r.fan &&
+   r.sensor &&
+   r.network &&
+   r.manual==="AUTO"
+ ){
+   totalSaved+=WATTS/1000*elapsed;
+ }
+
+ r.lastTime=now;
+
+ // Manual override takes priority.
+ if(r.manual==="ON"){
+   r.lights=true;
+   r.fan=true;
+   r.emptySince=null;
+   return "Manual override: appliances ON";
+ }
+
+ if(r.manual==="OFF"){
+   r.lights=false;
+   r.fan=false;
+   r.emptySince=null;
+   return "Manual override: appliances OFF";
+ }
+
+ // Automatic mode: faults prevent new shutdown decisions.
+ if(!r.sensor||!r.network){
+   r.emptySince=null;
+   return "FAIL-SAFE: previous appliance state retained";
+ }
+
+ // Occupancy detected.
+ if(r.people>0){
+   r.emptySince=null;
+   r.lights=true;
+   r.fan=true;
+   return "Occupied: appliances ON";
+ }
+
+ // Start absence verification.
+ if(r.emptySince===null){
+   r.emptySince=now;
+ }
+
+ const minutes=(now-r.emptySince)/60000;
+ const delayMinutes=Number(document.getElementById("delay").value);
+
+ // Switch off only after continuous absence.
+ if(minutes>=delayMinutes){
+   if(r.lights||r.fan){
+     r.lights=false;
+     r.fan=false;
+     log("Room "+r.id+": verified absence; lights and fans switched OFF.");
+   }
+
+   return "Unoccupied: appliances OFF";
+ }
+
+ return "Absence verification: "+
+ Math.ceil(delayMinutes-minutes)+
+ " minutes remaining";
+}
+
+function render(){
+ let occupied=0;
+ let empty=0;
+
+ document.getElementById("rooms").innerHTML=rooms.map((r,i)=>{
+
+   if(r.people>0)occupied++;
+   else empty++;
+
+   const result=control(r);
+   const fault=!r.sensor||!r.network;
+
+   return `
+   <div class="room">
+
+   <h3>Room ${r.id}</h3>
+
+   <div class="status ${fault?'bad':r.people?'good':'warn'}">
+   ${fault?'FAULT / SAFE HOLD':r.people?'OCCUPIED':'UNOCCUPIED'}
+   </div>
+
+   <div class="appliance">People detected: <b>${r.people}</b></div>
+   <div class="appliance">Lights: <b>${r.lights?'ON':'OFF'}</b></div>
+   <div class="appliance">Fan: <b>${r.fan?'ON':'OFF'}</b></div>
+   <div class="appliance">Sensor: ${r.sensor?'Healthy':'Failed'}</div>
+   <div class="appliance">Network: ${r.network?'Connected':'Disconnected'}</div>
+
+   <div class="appliance"><small>${result}</small></div>
+
+   <button onclick="changePeople(${i})">Change occupancy</button>
+   <button onclick="toggleSensor(${i})">Sensor fault</button>
+   <button onclick="toggleNetwork(${i})">Network fault</button>
+
+   <div style="margin-top:12px">
+
+     <small>
+       Control mode:
+       <b>${r.manual==="AUTO"?"AUTOMATIC":r.manual==="ON"?"MANUAL ON":"MANUAL OFF"}</b>
+     </small>
+
+     <div style="margin-top:7px">
+
+       <button
+       onclick="setManual(${i},'AUTO')"
+       style="${r.manual==='AUTO'?'background:#2563eb;border-color:#60a5fa':''}">
+       AUTO
+       </button>
+
+       <button
+       onclick="setManual(${i},'ON')"
+       style="${r.manual==='ON'?'background:#15803d;border-color:#4ade80':''}">
+       MANUAL ON
+       </button>
+
+       <button
+       onclick="setManual(${i},'OFF')"
+       style="${r.manual==='OFF'?'background:#b91c1c;border-color:#fb7185':''}">
+       MANUAL OFF
+       </button>
+
+     </div>
+   </div>
+
+   </div>`;
+ }).join("");
+
+ document.getElementById("occupied").textContent=occupied;
+ document.getElementById("empty").textContent=empty;
+ document.getElementById("saved").textContent=totalSaved.toFixed(3)+" kWh";
+}
+
+function changePeople(i){
+ const n=prompt(
+   "Enter number of people in room "+rooms[i].id,
+   rooms[i].people
+ );
+
+ if(n===null)return;
+
+ if(!Number.isInteger(Number(n))||Number(n)<0||Number(n)>20){
+   alert("Enter a whole number from 0 to 20.");
+   return;
+ }
+
+ const r=rooms[i];
+ r.people=Number(n);
+ r.emptySince=null;
+
+ log("Room "+r.id+": occupancy updated to "+r.people+".");
+ render();
+}
+
+function toggleSensor(i){
+ const r=rooms[i];
+ r.sensor=!r.sensor;
+
+ log("Room "+r.id+": sensor "+(r.sensor?"restored":"failure detected")+".");
+ render();
+}
+
+function toggleNetwork(i){
+ const r=rooms[i];
+ r.network=!r.network;
+
+ log("Room "+r.id+": network "+(r.network?"restored":"disconnected")+".");
+ render();
+}
+
+function setManual(i,v){
+ const r=rooms[i];
+
+ r.manual=v;
+ r.emptySince=null;
+
+ log("Room "+r.id+": manual mode set to "+v+".");
+ render();
+}
+
+function runAll(){
+ rooms.forEach(r=>control(r));
+ render();
+ log("Automatic control cycle executed.");
+}
+
+function resetAll(){
+ rooms.forEach((r,i)=>{
+   r.people=i===0||i===2?1:0;
+   r.sensor=true;
+   r.network=true;
+   r.manual="AUTO";
+   r.lights=true;
+   r.fan=true;
+   r.emptySince=null;
+   r.lastTime=Date.now();
+ });
+
+ totalSaved=0;
+
+ log("Simulation reset.");
+ render();
+}
+
+setInterval(render,1000);
+
+log("Smart Energy simulation initialised.");
+render();
+</script>
+
+</body>
+</html>
